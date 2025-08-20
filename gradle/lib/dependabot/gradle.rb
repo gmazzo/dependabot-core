@@ -18,6 +18,8 @@ Dependabot::PullRequestCreator::Labeler
 require "dependabot/dependency"
 Dependabot::Dependency.register_production_check("gradle", ->(_) { true })
 
+puts "dummy"
+
 Dependabot::Dependency
   .register_display_name_builder(
     "gradle",
