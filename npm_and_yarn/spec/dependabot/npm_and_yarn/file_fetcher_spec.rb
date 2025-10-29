@@ -77,7 +77,7 @@ RSpec.describe Dependabot::NpmAndYarn::FileFetcher do
 
     after { FileUtils.rm_rf(repo_contents_path) }
 
-    it "pulls files from lfs after cloning" do
+    it "pulls files from lfs after cloning", skip: "External issue - waiting for resolution" do
       # Calling #files triggers the clone
       expect(file_fetcher_instance.files.map(&:name)).to contain_exactly("package.json", "yarn.lock", ".yarnrc.yml")
       expect(
@@ -495,6 +495,29 @@ RSpec.describe Dependabot::NpmAndYarn::FileFetcher do
       it "parses the version as 8" do
         expect(file_fetcher_instance.ecosystem_versions).to eq(
           { package_managers: { "pnpm" => 8 } }
+        )
+      end
+    end
+
+    context "when using 9.0 as lockfile format" do
+      before do
+        stub_request(:get, File.join(url, "pnpm-lock.yaml?ref=sha"))
+          .with(headers: { "Authorization" => "token token" })
+          .to_return(
+            status: 200,
+            body: fixture("github", "pnpm_lock_9.0_content.json"),
+            headers: json_header
+          )
+      end
+
+      it "fetches the package.json and pnpm-lock.yaml" do
+        expect(file_fetcher_instance.files.map(&:name))
+          .to match_array(%w(package.json pnpm-lock.yaml))
+      end
+
+      it "parses the version as 10" do
+        expect(file_fetcher_instance.ecosystem_versions).to eq(
+          { package_managers: { "pnpm" => 10 } }
         )
       end
     end
