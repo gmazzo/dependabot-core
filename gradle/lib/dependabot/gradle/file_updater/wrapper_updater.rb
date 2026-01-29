@@ -64,15 +64,16 @@ module Dependabot
             cwd = File.join(temp_dir, base_path(build_file))
 
             has_local_script = File.exist?(File.join(cwd, "./gradlew"))
-            command_parts = %w(--no-daemon --stacktrace) + command_args(target_requirements)
-            command = Shellwords.join([has_local_script ? "./gradlew" : "gradle"] + command_parts)
 
             Dir.chdir(cwd) do
               FileUtils.chmod("+x", "./gradlew") if has_local_script
 
               properties_file = File.join(cwd, "gradle/wrapper/gradle-wrapper.properties")
-              validate_option = get_validate_distribution_url_option(properties_file)
+              validate_distribution, network_timeout = read_wrapper_options(properties_file)
               env = { "JAVA_OPTS" => proxy_args.join(" ") } # set proxy for gradle execution
+
+              command_parts = %w(--no-daemon --stacktrace) + command_args(target_requirements, network_timeout)
+              command = Shellwords.join([has_local_script ? "./gradlew" : "gradle"] + command_parts)
 
               begin
                 # first attempt: run the wrapper task via the local gradle wrapper (if present)
@@ -90,7 +91,7 @@ module Dependabot
               end
 
               # Restore previous validateDistributionUrl option if it existed
-              override_validate_distribution_url_option(properties_file, validate_option)
+              override_validate_distribution_url_option(properties_file, validate_distribution)
 
               update_files_content(temp_dir, local_files, updated_files)
             rescue SharedHelpers::HelperSubprocessFailed => e
@@ -111,8 +112,9 @@ module Dependabot
           @target_files.any? { |r| "/#{file.name}".end_with?(r) }
         end
 
-        sig { params(requirements: T::Array[T::Hash[Symbol, T.untyped]]).returns(T::Array[String]) }
-        def command_args(requirements)
+        # rubocop:disable Metrics/PerceivedComplexity
+        sig { params(requirements: T::Array[T::Hash[Symbol, T.untyped]], network_timeout: T.nilable(String)).returns(T::Array[String]) }
+        def command_args(requirements, network_timeout)
           version = T.let(requirements[0]&.[](:requirement), String)
           checksum = T.let(requirements[1]&.[](:requirement), String) if dependency.requirements.size > 1
           distribution_url = T.let(requirements[0]&.[](:source), T::Hash[Symbol, String])[:url]
@@ -124,6 +126,7 @@ module Dependabot
           # The original value is restored after the wrapper task completes
           # see method `get_validate_distribution_url_option` for more details
           args = %W(wrapper --gradle-version #{version} --no-validate-url) # see
+          args += %W(--network-timeout #{network_timeout}) if network_timeout
           args += %W(--distribution-type #{distribution_type}) if distribution_type
           args += %W(--gradle-distribution-sha256-sum #{checksum}) if checksum
           args
@@ -180,12 +183,16 @@ module Dependabot
         # We need to add the `--no-validate-url` the commandline args to disable this validation
         # However, this change is persistent in the `gradle-wrapper.properties` file
         # To avoid side effects, we read the existing value before the update and restore it afterward
-        sig { params(properties_file: T.any(Pathname, String)).returns(T.nilable(String)) }
-        def get_validate_distribution_url_option(properties_file)
-          return nil unless File.exist?(properties_file)
+        # For the same reason, we apply the same for `--network-timeout`.
+        sig { params(properties_file: T.any(Pathname, String)).returns(T::Array[T.nilable(String)]) }
+        def read_wrapper_options(properties_file)
+          return [nil, nil] unless File.exist?(properties_file)
 
           properties_content = File.read(properties_file)
-          properties_content.match(/^validateDistributionUrl=(.*)$/)&.captures&.first
+          validate_distribution = properties_content.match(/^validateDistributionUrl=(.*)$/)&.captures&.first
+          network_timeout = properties_content.match(/^networkTimeout=(.*)$/)&.captures&.first
+
+          [validate_distribution, network_timeout]
         end
 
         sig { params(properties_file: T.any(Pathname, String), value: T.nilable(String)).void }
@@ -200,7 +207,6 @@ module Dependabot
           File.write(properties_file, updated_content)
         end
 
-        # rubocop:disable Metrics/PerceivedComplexity
         sig { returns(T::Array[String]) }
         def proxy_args
           http_proxy = ENV.fetch("HTTP_PROXY", nil)
